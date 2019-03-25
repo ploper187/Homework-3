@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define ACTIVE 0
+#define ACTIVE -3
 #define EMPTY -1
 #define INVALID -2
 
@@ -185,21 +185,11 @@ void printBoard(const Board* b) {
   printLine(b->cols);
 }
 
-void maxSquares(const Board * b) {
-  pthread_t tid[4];
-  const int canMoveLeft = b->x - 2 >= 0 && b->y + 1 < b->rows;
-  const int canMoveRight = b->x + 2 < b->cols && b->y - 1 >= 0;
-  const int canMoveDown = b->x + 1 < b->cols && b->y + 2 < b->rows;
-  const int canMoveUp = b->x - 1 >= 0 && b->y - 2 >= 0;
-  // up down right left 
-  if (canMoveUp) moveUp(b);
-  if (canMoveDown) moveDown(b);
-  if (canMoveRight) moveRight(b);
-  if (canMoveLeft) moveLeft(b);
-  
-  
-  // Call thhreads for up, down, right, left
+int isFree(const Board * b, const int r, const int c) {
+  return itemAt(b, r, c) == EMPTY;
 }
+
+
 
 void moveLeft(Board * b) {
   b->x -= 2;
@@ -217,6 +207,47 @@ void moveDown(Board * b) {
   b->x -= 1;
   b->y += 2;
 }
+
+
+void maxSquares(Board * b, const int x) {
+  pthread_t tid[4];
+  const int canMoveLeft = b->x - 2 >= 0 && b->y + 1 < b->rows;
+  const int canMoveRight = b->x + 2 < b->cols && b->y - 1 >= 0;
+  const int canMoveDown = b->x + 1 < b->cols && b->y + 2 < b->rows;
+  const int canMoveUp = b->x - 1 >= 0 && b->y - 2 >= 0;
+  // up down right left 
+  if (canMoveUp) moveUp(b);
+  if (canMoveDown) moveDown(b);
+  if (canMoveRight) moveRight(b);
+  if (canMoveLeft) moveLeft(b);
+  
+  
+  // Call thhreads for up, down, right, left
+}
+
+void knightsTour(Board * b, const int x) {
+  b->data[0][0] = 0;
+  /*
+   If all squares are visited 
+   print the solution
+   Else
+   a) Add one of the next moves to solution vector and recursively 
+   check if this move leads to a solution. (A Knight can make maximum 
+   eight moves. We choose one of the 8 moves in this step).
+   b) If the move chosen in the above step doesn't lead to a solution
+   then remove this move from the solution vector and try other 
+   alternative moves.
+   c) If none of the alternatives work then return false (Returning false 
+   will remove the previously added item in recursion and if false is 
+   returned by the initial call of recursion then "no solution exists" )   
+
+   */
+  maxSquares(b, x);
+  
+  
+}
+
+
 
 int main(int argc, const char * argv[]) {
   if (argc < 3) 
