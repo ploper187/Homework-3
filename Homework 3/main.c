@@ -8,10 +8,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
 
 #define ACTIVE -3
 #define EMPTY -1
 #define INVALID -2
+
 
 /*
  use C and the POSIX thread (Pthread) library to implement a
@@ -56,7 +58,6 @@
                          least x squares covered.
  */
 
-int max_squares = 0;
 
 
 struct Node {
@@ -117,16 +118,28 @@ Node* put(nGram *n, const char * str) {
 
 
 
-
 struct Board {
   int ** data;
   int rows;
   int cols;
   int x;
   int y;
+  int moves;
+  int depth;
 }; 
 typedef struct Board Board;
 
+int isDebug = 0==1;
+
+int max_squares = 0;
+Board ** dead_end_boards = NULL;
+
+void freeBoard(Board * b) {
+  for (int i = 0; i < b->rows; i++) 
+    free(b->data[i]);
+  free(b->data);
+  free(b);
+}
 Board* makeBoard(const int rows, const int cols) {
   if (rows < 1 || cols < 1)
     return NULL;
@@ -135,7 +148,8 @@ Board* makeBoard(const int rows, const int cols) {
   board->cols = cols;
   board->x = 0;
   board->y = 0;
-  
+  board->moves = 0;
+  board->depth = 0;
   board->data = calloc(rows, sizeof(int*));
   for (int i = 0; i < rows; i++) {
     board->data[i] = calloc(cols, sizeof(int));
@@ -144,16 +158,26 @@ Board* makeBoard(const int rows, const int cols) {
   }
   return board;
 }
+Board * copyBoard(const Board * b) {
+  Board* newB = makeBoard(b->rows, b->cols);
+  newB->x = b->x;
+  newB->y = b->y;
+  newB->depth = b->depth;
+  newB->moves = b->moves;
+  for (int i = 0; i < b->rows; i++)
+    for (int j = 0; j < b->cols; j++)
+      newB->data[i][j] = b->data[i][j];
+  return newB;
+}
 
 
 int itemAt(const Board * b, const int row, const int col) {
   if (row < 0 || col < 0 || row >= b->rows || col >= b->cols) 
     return INVALID;
   else return b->data[row][col]; 
-  
 }
 
-int itemIs(const Board * b, const int row, const int col, int new) {
+int itemIs(Board * b, const int row, const int col, int new) {
   int old = itemAt(b, row, col);
   if (old != INVALID) 
     b->data[row][col] = new;
@@ -167,7 +191,6 @@ void printLine(int n) {
   printf("+\n");
 }
 
-
 void printBoard(const Board* b) {
   for (int i = 0; i < b->rows; i++){
     printLine(b->cols);
@@ -177,6 +200,8 @@ void printBoard(const Board* b) {
         printf("| ! ");
       else if (item == EMPTY)
         printf("|   ");
+      else if (item == ACTIVE)
+        printf("|<S>");
       else
         printf("| %d ", item);
     }
@@ -189,44 +214,95 @@ int isFree(const Board * b, const int r, const int c) {
   return itemAt(b, r, c) == EMPTY;
 }
 
+int makeMove(Board * b, int xp, int yp) {
+  if (!isFree(b, xp, yp)) 
+    return 0==1;
+  itemIs(b, b->x, b->y, b->moves++);
+  itemIs(b, xp, yp, ACTIVE); 
+  b->x = xp;
+  b->y = yp;
+  return 0==0;
+}
+void undoMove(Board *b, int xo, int yo) {
+  itemIs(b, b->x, b->y, EMPTY);
+  itemIs(b, xo, yo, --b->moves);
+  b->x = xo;
+  b->y = yo;
+}
+int possibleMoveCount(const Board *b) {
+  const int ds[8] = {1, 2,  2,  1, -1, -2, -2, -1};
+  int moveCount = 0;
+  for (int i = 0; i < 8; i++) 
+    moveCount += isFree(b, b->x + ds[(i+2)%8], b->y + ds[i]);
+  return moveCount;
+}
 
 
-void moveLeft(Board * b) {
-  b->x -= 2;
-  b->y += 1;
-}
-void moveUp(Board * b) {
-  b->x -= 1;
-  b->y -= 2;
-}
-void moveRight(Board * b) {
-  b->x += 2;
-  b->y -= 1;
-}
-void moveDown(Board * b) {
-  b->x -= 1;
-  b->y += 2;
-}
-
-
-void maxSquares(Board * b, const int x) {
-  pthread_t tid[4];
-  const int canMoveLeft = b->x - 2 >= 0 && b->y + 1 < b->rows;
-  const int canMoveRight = b->x + 2 < b->cols && b->y - 1 >= 0;
-  const int canMoveDown = b->x + 1 < b->cols && b->y + 2 < b->rows;
-  const int canMoveUp = b->x - 1 >= 0 && b->y - 2 >= 0;
-  // up down right left 
-  if (canMoveUp) moveUp(b);
-  if (canMoveDown) moveDown(b);
-  if (canMoveRight) moveRight(b);
-  if (canMoveLeft) moveLeft(b);
+void * maxSquares(void * argv) {
+  Board * b = (Board*) argv;
+  const int ds[8] = {1, 2,  2,  1, -1, -2, -2, -1};
   
+  if (b->moves == b->rows * b->cols) {
+    return NULL; 
+  } else if (b->moves > b->rows * b->cols) {
+    perror("Impossible number of moves made");
+    return NULL; 
+  }
   
-  // Call thhreads for up, down, right, left
+  // Call threads for up, down, right, left
+  int possible = possibleMoveCount(b);
+  if (possible > 1) 
+    printf("THREAD %d: %d moves possible after move #%d; creating threads...\n", (int)pthread_self(), possible, b->moves);
+  else if (possible == 0) {
+    printf("THREAD %d: Dead end after move #%d\n", (int)pthread_self(), b->moves);
+    max_squares = max_squares < b->moves ? b->moves : max_squares;
+    return NULL;
+  }
+  pthread_t tids[possible];
+  Board ** bs = calloc(possible, sizeof(Board));
+  int successes = 0;
+  for (int i = 0; i < 8; i++) {
+    Board* newB = copyBoard((const Board*)b); 
+    bs[successes] = newB;
+    if (makeMove(newB, b->x + ds[(i+2)%8], b->y + ds[i])) {
+      if (possible > 1) {
+        pthread_create(&tids[successes], NULL, maxSquares, (void *) newB);
+#ifdef NO_PARALLEL
+        pthread_join(tids[successes], NULL );
+        printf("THREAD %d: Thread %d joined (returned %d)\n", (int)pthread_self(), (int)tids[successes], bs[i]->moves);
+#endif
+      }
+      else if (possible == 1)
+        maxSquares(newB);
+      successes++;
+    } 
+  }
+#ifndef NO_PARALLEL
+  for (int i = 0; b->depth == 0 && i < possible && possible > 1; i++) {
+    pthread_join(tids[i], NULL );
+    printf("THREAD %d: Thread %d joined (returned %d)\n", (int)pthread_self(), (int)tids[i], bs[i]->moves);
+    freeBoard(bs[i]);
+  }
+#endif
+  return NULL;
 }
 
 void knightsTour(Board * b, const int x) {
   b->data[0][0] = 0;
+  b->moves = 1;
+  printf("THREAD %d: Solving Sonny's knight's tour problem for a %dx%d board\n", (int)pthread_self(), b->cols, b->rows);
+  maxSquares(b);
+  printf("THREAD %d: Best solution(s) found visit %d squares (out of %d)\n", (int)pthread_self(), max_squares, b->cols*b->rows);
+  
+  printf("THREAD %d: Dead end boards:\n", (int)pthread_self());
+  /*
+   THREAD 1000: > SSS
+   THREAD 1000: S.S
+   THREAD 1000: SSS
+   THREAD 1000: > SSS
+   THREAD 1000: S.S
+   THREAD 1000: SSS
+   */
   /*
    If all squares are visited 
    print the solution
@@ -242,7 +318,6 @@ void knightsTour(Board * b, const int x) {
    returned by the initial call of recursion then "no solution exists" )   
 
    */
-  maxSquares(b, x);
   
   
 }
@@ -250,9 +325,10 @@ void knightsTour(Board * b, const int x) {
 
 
 int main(int argc, const char * argv[]) {
+  setvbuf( stdout, NULL, _IONBF, 0 );
   if (argc < 3) 
     perror("Invalid number of arguments (2 required)"); 
-  
+  isDebug = strcmp(argv[argc-1], "debug") == 0;
   const int m = atoi(argv[1]);
   const int n = atoi(argv[2]);
   int x = -1;
@@ -265,7 +341,7 @@ int main(int argc, const char * argv[]) {
   }
 
   Board * b = makeBoard(m, n);
-  printBoard(b);
+  knightsTour(b, x);
   
   return 0;
 }

@@ -75,6 +75,10 @@
             argument = "1"
             isEnabled = "YES">
          </CommandLineArgument>
+         <CommandLineArgument
+            argument = "debug"
+            isEnabled = "YES">
+         </CommandLineArgument>
       </CommandLineArguments>
       <AdditionalOptions>
       </AdditionalOptions>
