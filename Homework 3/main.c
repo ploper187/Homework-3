@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
+#include <limits.h> 
+
 
 #define ACTIVE -3
 #define EMPTY -1
@@ -56,68 +58,50 @@
   m = rows, n columns, x indicates that the main thread should
                          display all “dead end” boards with at 
                          least x squares covered.
+ // 1        .------.
+ // c-2, r-1 | d    |
+ //          | cba  |
+ //          `------`
+ // 2        .-----.
+ // c-1, r-2 | dc  | 
+ //          |  b  |
+ //          |  a  |
+ //          `-----`
+ // 3        .-----.   
+ // c+1, r-2 |  cd |    
+ //          |  b  |    
+ //          |  a  |     
+ //          `-----` 
+ // 4        .------.
+ // c+2, r-1 |   d  |
+ //          | abc  |
+ //          `------`
+ // 5        .------.
+ // c+2, r+1 | abc  |
+ //          |   d  |
+ //          `------`
+ // 6        .-----.
+ // c+1, r+2 |  a  |
+ //          |  b  |
+ //          |  cd |
+ //          `-----`
+ // 7        .-----.      
+ // c-1, r+2 |  a  |  
+ //          |  b  |    
+ //          | dc  |
+ //          `-----`
+ // 8        .------.
+ // c-2, r+1 | cba  |
+ //          | d    |
+ //          `------`
  */
 
 
 
-struct Node {
+struct Node  {
   char * value;
   int index;
-};
-typedef struct Node Node;
-
-int hash(const char * str) {
-  int h = 0;
-  for (const char * p = str; *p != '\0'; p++) {
-    h += *p;
-  }
-  return h;
-}
-
-struct HashTable {
-  // {a, b, c, d, e, f, g, ...}
-  // {Occurrence(a, 1), Occurrence(b, 2), ...}
-  Node ** values;
-  unsigned long size, allocated;
-};
-typedef struct HashTable nGram;
-
-nGram* makeNGram(unsigned long size) {
-  nGram *new = (nGram*)calloc(1, sizeof(nGram));
-  new->values = (Node**)calloc(size, sizeof(Node*));
-  new->size = size;
-  new->allocated = 0;
-  return new;
-}
-
-Node* getByIndex(const nGram* n, const int index) {
-  return index < n->size ? *(n->values + index) : NULL;
-}
-Node* get(const nGram* n, const char* key) {
-  int index = hash(key)%(n->size);
-  return getByIndex(n, index);
-}
-
-Node* put(nGram *n, const char * str) {
-  int h = hash(str);
-  Node * o = getByIndex(n, h);
-  if (!o) {
-    o = (Node*)calloc(1, sizeof(Node));
-    o->index = h%n->size;
-    o->value = (char*)calloc(strlen(str)+1, sizeof(char));
-    strcpy(o->value, str);
-    *((n->values) + (h%n->size)) = o;
-    n->allocated++;
-  } else {
-    o->value = realloc(o->value, (strlen(str)+1)*sizeof(char));
-    strcpy(o->value, str);
-  }
-  
-  return o;
-}
-
-
-
+}; typedef struct Node Node;
 struct Board {
   int ** data;
   int rows;
@@ -126,13 +110,16 @@ struct Board {
   int y;
   int moves;
   int depth;
-}; 
-typedef struct Board Board;
+}; typedef struct Board Board;
 
-int isDebug = 0==1;
-
+pthread_mutex_t dead_end_board_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t max_squares_mutex = PTHREAD_MUTEX_INITIALIZER;
+const int dx[8] = {-2,-1, 1, 2, 2, 1,-1,-2};
+const int dy[8] = {-1,-2,-2,-1, 1, 2, 2, 1};
 int max_squares = 0;
-Board ** dead_end_boards = NULL;
+Board ** dead_end_boards;
+int dead_end_boards_count = 0;
+int dead_end_boards_size = 1;
 
 void freeBoard(Board * b) {
   for (int i = 0; i < b->rows; i++) 
@@ -150,198 +137,352 @@ Board* makeBoard(const int rows, const int cols) {
   board->y = 0;
   board->moves = 0;
   board->depth = 0;
-  board->data = calloc(rows, sizeof(int*));
-  for (int i = 0; i < rows; i++) {
-    board->data[i] = calloc(cols, sizeof(int));
-    for (int j = 0; j < cols; j++)
-      board->data[i][j] = EMPTY;
+  board->data = calloc(cols, sizeof(int*));
+  for (int x = 0; x < cols; x++) {
+    board->data[x] = calloc(rows, sizeof(int));
+    for (int y = 0; y < rows; y++)
+      board->data[x][y] = EMPTY;
   }
   return board;
 }
+
+int itemAt(const Board * b, const int x, const int y) {
+  if (x < 0 || y < 0 || y >= b->rows || x >= b->cols) 
+    return INVALID;
+  else return b->data[x][y]; 
+}
+
+int itemIs(Board * b, const int x, const int y, int new) {
+  int old = itemAt(b, x, y);
+  if (old != INVALID) 
+    b->data[x][y] = new;
+  return old;
+}
+
+
 Board * copyBoard(const Board * b) {
   Board* newB = makeBoard(b->rows, b->cols);
   newB->x = b->x;
   newB->y = b->y;
   newB->depth = b->depth;
   newB->moves = b->moves;
-  for (int i = 0; i < b->rows; i++)
-    for (int j = 0; j < b->cols; j++)
-      newB->data[i][j] = b->data[i][j];
+  for (int x = 0; x < b->cols; x++)
+    for (int y = 0; y < b->rows; y++)
+      itemIs(newB, x, y, itemAt(b, x, y));
   return newB;
 }
 
 
-int itemAt(const Board * b, const int row, const int col) {
-  if (row < 0 || col < 0 || row >= b->rows || col >= b->cols) 
-    return INVALID;
-  else return b->data[row][col]; 
-}
 
-int itemIs(Board * b, const int row, const int col, int new) {
-  int old = itemAt(b, row, col);
-  if (old != INVALID) 
-    b->data[row][col] = new;
-   return old;
+
+unsigned long hashBoard(const Board * b) {
+  // http://www.cse.yorku.ca/~oz/hash.html
+  // https://github.com/jamesroutley/write-a-hash-table/tree/master/03-hashing
+  unsigned long hash = 13;  
+  for (int x = 0; x < b->cols; x++) {
+    for (int y = 0; y < b->rows; y++) {
+      const int this = itemAt(b, x, y);
+      hash = hash*151 + (this+3);
+    }
+  }
+  return hash;
 }
 
 void printLine(int n) {
-  for (int i = 0; i < n; i++) {
+  for (int i = 0; i < n; i++) 
     printf("+---"); 
-  }
   printf("+\n");
 }
 
-void printBoard(const Board* b) {
-  for (int i = 0; i < b->rows; i++){
+void printBoardDebug(const Board* b) {
+  for (int y = 0; y < b->rows; y++){
     printLine(b->cols);
-    for (int j = 0; j < b->cols; j++) {
-      int item = itemAt(b, i, j);
+    for (int x = 0; x < b->cols; x++) {
+      int item = itemAt(b, x, y);
       if (item == INVALID) 
         printf("| ! ");
       else if (item == EMPTY)
         printf("|   ");
       else if (item == ACTIVE)
         printf("|<S>");
+      else if (item > b->rows * b->cols) 
+        printf("| %c ", item);
       else
         printf("| %d ", item);
     }
-    printf("|\n");
+    printf("|");
+    if (y == 0) 
+      printf("  %dx%d board\n", b->rows, b->cols);
+    else if (y == 1) 
+      printf("  %d moves\n", b->moves);
+    else if (y == 2)
+      printf("  %d deep\n", b->depth);
+    else
+      printf("\n");
   }
   printLine(b->cols);
+  printf("Hash: %lu\n", hashBoard(b));
+  fflush(stdout);
+}
+void printBoard(const Board* b, pthread_t tid) {
+  for (int y = 0; y < b->rows; y++){
+    char bLine[b->cols+1];
+    bLine[b->cols] = '\0';
+    for (int x = 0; x < b->cols; x++) {
+      int item = itemAt(b, x, y);
+      if (item == INVALID) 
+        bLine[x] = '!';
+      else if (item == EMPTY)
+        bLine[x] = '.';
+      else 
+        bLine[x] = 'S';
+    }
+    char prefix = y == 0 ? '>' : ' ';
+    printf("THREAD %d: %c %s\n", (int)tid, prefix, bLine);
+  }
+  fflush(stdout);
 }
 
-int isFree(const Board * b, const int r, const int c) {
-  return itemAt(b, r, c) == EMPTY;
+int isFree(const Board * b, const int x, const int y) {
+  return itemAt(b, x, y) == EMPTY;
 }
+
+
+
+//unsigned long makeHash(const nGram* n, const char * str) {
+//  // http://www.cse.yorku.ca/~oz/hash.html
+//  // https://github.com/jamesroutley/write-a-hash-table/tree/master/03-hashing
+//  
+//  unsigned long h;
+//  unsigned const int *us;
+//  
+//  /* cast s to unsigned const char * */
+//  /* this ensures that elements of s will be treated as having values >= 0 */
+//  us = (unsigned const int *) str;
+//  
+//  h = 0;
+//  //int multipliers[] = {151, 157};
+//  while(*us != '\0') {
+//    h = h * 151 + (*us+3);
+//    us++;
+//  }
+//  h = h%n->size;
+//  return h;
+//  
+//  return h;
+//}
 
 int makeMove(Board * b, int xp, int yp) {
-  if (!isFree(b, xp, yp)) 
-    return 0==1;
-  itemIs(b, b->x, b->y, b->moves++);
-  itemIs(b, xp, yp, ACTIVE); 
+  if (!isFree(b, xp, yp)) return 0==1; 
+  const int moveOut = itemIs(b, b->x, b->y, b->moves++) == ACTIVE;
+  const int moveIn = itemIs(b, xp, yp, ACTIVE) == EMPTY;
+  if (moveOut && moveIn) {
+    
+  } else {
+#ifdef DEBUG
+    printf("uh oh definitely board some problems\n");
+#endif
+  }
   b->x = xp;
   b->y = yp;
-  return 0==0;
+  return moveOut && moveIn;
 }
 void undoMove(Board *b, int xo, int yo) {
   itemIs(b, b->x, b->y, EMPTY);
-  itemIs(b, xo, yo, --b->moves);
+  itemIs(b, xo, yo, ACTIVE);
   b->x = xo;
   b->y = yo;
 }
 int possibleMoveCount(const Board *b) {
-  const int ds[8] = {1, 2,  2,  1, -1, -2, -2, -1};
   int moveCount = 0;
   for (int i = 0; i < 8; i++) 
-    moveCount += isFree(b, b->x + ds[(i+2)%8], b->y + ds[i]);
+    moveCount += isFree(b, b->x + dy[i], b->y + dx[i]) ? 1 : 0;
+  
   return moveCount;
 }
 
+void markPossibleMoves(const Board * board) {
+  Board * b = copyBoard(board);
+  const char a[8] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'};
+  int successes = 0;
+  for (int i = 0; i < 8; i++) {
+    if (isFree(b, b->x + dx[i], b->y + dy[i])) {
+      itemIs(b, b->x + dx[i], b->y + dy[i], a[successes++]);
+    }
+  }
+  printBoardDebug(b);
+  freeBoard(b);
+}
+
+void addDeadEndBoard(Board * b) {
+  pthread_mutex_lock( &dead_end_board_mutex );
+#ifdef DEBUG
+  printBoardDebug(b);
+#endif
+  if (b->depth > 0 && dead_end_boards_count >= dead_end_boards_size) {
+    dead_end_boards_size  = dead_end_boards_size < 16 ? 16 : dead_end_boards_size*2;
+    dead_end_boards = realloc(dead_end_boards, dead_end_boards_size*sizeof(Board*));
+  }
+  dead_end_boards[dead_end_boards_count++] = copyBoard(b); 
+  pthread_mutex_unlock( &dead_end_board_mutex );
+}
+
+void reportMoveCount(Board * b) {
+  pthread_mutex_lock( &max_squares_mutex );
+  max_squares = max_squares < b->moves ? b->moves : max_squares;
+  pthread_mutex_unlock( &max_squares_mutex );
+
+}
 
 void * maxSquares(void * argv) {
   Board * b = (Board*) argv;
-  const int ds[8] = {1, 2,  2,  1, -1, -2, -2, -1};
   
+  unsigned int * maxMoves = calloc(1, sizeof(unsigned int));
+  *maxMoves = b->moves;
   if (b->moves == b->rows * b->cols) {
-    return NULL; 
+    printf("THREAD %d: Sonny found a full knight's tour!\n", (int)pthread_self());
+    fflush(stdout);
+    reportMoveCount(b);
+#ifdef DEBUG
+    printBoardDebug(b);
+#endif
+    pthread_exit(maxMoves);
+    return maxMoves; 
   } else if (b->moves > b->rows * b->cols) {
     perror("Impossible number of moves made");
-    return NULL; 
+    *maxMoves = b->rows * b->cols;
+    pthread_exit(maxMoves);
+    return maxMoves; 
   }
   
   // Call threads for up, down, right, left
   int possible = possibleMoveCount(b);
-  if (possible > 1) 
-    printf("THREAD %d: %d moves possible after move #%d; creating threads...\n", (int)pthread_self(), possible, b->moves);
-  else if (possible == 0) {
+  if (possible > 1)  {
+    printf("THREAD %d: %d moves possible after move #%d; creating threads...\n", 
+           (int)pthread_self(), possible, b->depth+1);
+    fflush(stdout);
+#ifdef DEBUG
+//    markPossibleMoves(b);
+#endif
+  } else if (possible == 0) {
     printf("THREAD %d: Dead end after move #%d\n", (int)pthread_self(), b->moves);
-    max_squares = max_squares < b->moves ? b->moves : max_squares;
-    return NULL;
+    fflush(stdout);
+    reportMoveCount(b);
+    addDeadEndBoard(b);
+#ifdef DEBUG
+    printBoardDebug(b);
+#endif
+    pthread_exit(maxMoves);
+    return maxMoves;
   }
   pthread_t tids[possible];
-  Board ** bs = calloc(possible, sizeof(Board));
+  Board** bs = calloc(possible, sizeof(Board*));
   int successes = 0;
-  for (int i = 0; i < 8; i++) {
-    Board* newB = copyBoard((const Board*)b); 
-    bs[successes] = newB;
-    if (makeMove(newB, b->x + ds[(i+2)%8], b->y + ds[i])) {
+  for (int i = 0; i < possible; i++) bs[i] = copyBoard((const Board*)b);
+
+  for (int i = 0; successes < possible && i < 8; i++) {
+    Board* newB = bs[successes];
+    if (makeMove(newB, b->x + dx[i], b->y + dy[i])) {
+      bs[successes]->depth++;
       if (possible > 1) {
         pthread_create(&tids[successes], NULL, maxSquares, (void *) newB);
 #ifdef NO_PARALLEL
-        pthread_join(tids[successes], NULL );
-        printf("THREAD %d: Thread %d joined (returned %d)\n", (int)pthread_self(), (int)tids[successes], bs[i]->moves);
+        unsigned int * newMoves;
+        pthread_join(tids[successes], (void**)&newMoves);
+        printf("THREAD %d: Thread [%d] joined (returned %d)\n", 
+               (int)pthread_self(), (int)tids[successes], *(newMoves));
+        fflush(stdout);
+        *maxMoves = *(newMoves) > *(maxMoves) ? *(newMoves) : *(maxMoves); 
+        free(newMoves);
 #endif
       }
-      else if (possible == 1)
-        maxSquares(newB);
+      else if (possible == 1) {
+        unsigned int * newMoves = maxSquares(newB);
+        *maxMoves = *(newMoves) > *(maxMoves) ? *(newMoves) : *(maxMoves);
+        free(newMoves);
+      }
       successes++;
-    } 
+    }
   }
 #ifndef NO_PARALLEL
-  for (int i = 0; b->depth == 0 && i < possible && possible > 1; i++) {
-    pthread_join(tids[i], NULL );
-    printf("THREAD %d: Thread %d joined (returned %d)\n", (int)pthread_self(), (int)tids[i], bs[i]->moves);
-    freeBoard(bs[i]);
+  for (int i = 0; possible > 1 && i < possible; i++) {
+    unsigned int * newMoves;
+    pthread_join(tids[i], (void**)&newMoves);
+    if (newMoves) {
+      printf("THREAD %d: Thread %d joined (returned %d)\n", 
+             (int)pthread_self(), (int)tids[i], *(newMoves));
+      fflush(stdout);
+      *maxMoves = *(newMoves) > *(maxMoves) ? *(newMoves) : *(maxMoves); 
+      free(newMoves);
+    }
   }
 #endif
-  return NULL;
+//  for (int i = 0; i < possible; i++) 
+  if (b->depth > 0)
+    pthread_exit(maxMoves);
+  return maxMoves;
 }
 
 void knightsTour(Board * b, const int x) {
-  b->data[0][0] = 0;
+  b->data[0][0] = ACTIVE;
   b->moves = 1;
-  printf("THREAD %d: Solving Sonny's knight's tour problem for a %dx%d board\n", (int)pthread_self(), b->cols, b->rows);
-  maxSquares(b);
-  printf("THREAD %d: Best solution(s) found visit %d squares (out of %d)\n", (int)pthread_self(), max_squares, b->cols*b->rows);
+  printf("THREAD %d: Solving Sonny's knight's tour problem for a %dx%d board\n", 
+         (int)pthread_self(), b->rows, b->cols);
+  unsigned int * maxMoves = maxSquares(b);
+  free(maxMoves);
+  printf("THREAD %d: Best solution(s) found visit %d squares (out of %d)\n", 
+         (int)pthread_self(), max_squares, b->cols*b->rows);
   
   printf("THREAD %d: Dead end boards:\n", (int)pthread_self());
-  /*
-   THREAD 1000: > SSS
-   THREAD 1000: S.S
-   THREAD 1000: SSS
-   THREAD 1000: > SSS
-   THREAD 1000: S.S
-   THREAD 1000: SSS
-   */
-  /*
-   If all squares are visited 
-   print the solution
-   Else
-   a) Add one of the next moves to solution vector and recursively 
-   check if this move leads to a solution. (A Knight can make maximum 
-   eight moves. We choose one of the 8 moves in this step).
-   b) If the move chosen in the above step doesn't lead to a solution
-   then remove this move from the solution vector and try other 
-   alternative moves.
-   c) If none of the alternatives work then return false (Returning false 
-   will remove the previously added item in recursion and if false is 
-   returned by the initial call of recursion then "no solution exists" )   
-
-   */
-  
-  
+#ifdef DEBUG
+  printf("%d dead end boards for %d array allocation\n", 
+                      dead_end_boards_count, dead_end_boards_size);
+#endif
+  for (int i = 0; i < dead_end_boards_count; i++) {
+    Board * deadB = dead_end_boards[i];
+    if (deadB->moves >= x) {
+      printBoard(deadB, pthread_self()); 
+    }
+#ifdef DEBUG
+    printBoardDebug(deadB);
+#endif
+  }
+  free(dead_end_boards);
+  dead_end_boards_size = 0;
+  dead_end_boards_count = 0;
 }
 
-
+void argumentError() {
+  fprintf(stderr, "ERROR: Invalid argument(s)\n");
+  fprintf(stderr, "USAGE: a.out <m> <n> [<x>]\n");
+  exit(1);
+}
 
 int main(int argc, const char * argv[]) {
   setvbuf( stdout, NULL, _IONBF, 0 );
-  if (argc < 3) 
-    perror("Invalid number of arguments (2 required)"); 
-  isDebug = strcmp(argv[argc-1], "debug") == 0;
+  dead_end_boards = calloc(16, sizeof(Board*));
+  
+  if (argc < 3) { 
+    argumentError();
+  }
+#ifdef DEBUG
+    printf("\t---------------------------------------------\n");
+    printf("\t--------------------DEBUG--------------------\n");
+    printf("\t---------------------------------------------\n");
+#endif
   const int m = atoi(argv[1]);
   const int n = atoi(argv[2]);
-  int x = -1;
+  int x = INT_MIN;
   if (argc > 3) 
     x = atoi(argv[3]);
   
-  if (m <= 2 || n <= 2) {
-    fprintf(stderr, "ERROR: Invalid argument(s)\n");
-    fprintf(stderr, "USAGE: a.out <m> <n> [<x>]\n");
+  if (m <= 2 || n <= 2 || (x != INT_MIN && m*n < x)) {
+    argumentError();
   }
 
   Board * b = makeBoard(m, n);
   knightsTour(b, x);
+  
   
   return 0;
 }
